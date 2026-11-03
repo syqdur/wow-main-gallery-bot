@@ -198,8 +198,8 @@ async def on_ready():
 
 # Befehl: In einem Rutsch Charakter eintragen
 @bot.tree.command(name="charakter_eintragen", description="Trage deinen WoW Main ein: Bild anhängen & Popup ausfüllen")
-@app_commands.describe(bild="Ziehe deinen Screenshot hier rein oder wähle die Bilddatei aus")
-async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment = None):
+@app_commands.describe(bild="Pflichtfeld: Klicke hier oder ziehe deinen Screenshot direkt rein")
+async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment):
     # Öffnet sofort das Popup-Fenster und nimmt die angehängte Datei mit!
     modal = CharacterModal(uploaded_file=bild)
     await interaction.response.send_modal(modal)
