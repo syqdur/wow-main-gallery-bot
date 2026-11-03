@@ -42,7 +42,8 @@ class CharacterModal(discord.ui.Modal, title="WoW Main Charakter registrieren"):
     image_and_armory = discord.ui.TextInput(
         label="Bild-URL & Armory (URL oder Link)",
         style=discord.TextStyle.paragraph,
-        placeholder="Zeile 1: Bild-URL (z.B. https://i.imgur.com/...)\nZeile 2: Armory/Arsenal Link (optional)\nZeile 3+: Kurze Bio / Zitat (optional)",
+        placeholder="Zeile 1: Bild-URL (z.B. imgur.com/...)\nZeile 2: Armory Link oder Bio (optional)",
+        max_length=1000,
         required=False
     )
 
