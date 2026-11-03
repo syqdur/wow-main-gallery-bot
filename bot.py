@@ -6,7 +6,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import database
-from helpers import build_character_embed, CLASS_COLORS
+from helpers import build_character_embed, WOW_CLASSES
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -14,10 +14,178 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-WOW_CLASSES_CHOICES = [
-    app_commands.Choice(name=name, value=name)
-    for name in list(CLASS_COLORS.keys())
-]
+# Modal (Popup-Fenster) für Charakter-Eingabe
+class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
+    first_name = discord.ui.TextInput(
+        label="Vorname (Charaktername)",
+        placeholder="z.B. Arthas",
+        max_length=32,
+        required=True
+    )
+    last_name = discord.ui.TextInput(
+        label="Nachname (optional)",
+        placeholder="z.B. Menethil",
+        max_length=32,
+        required=False
+    )
+    char_class = discord.ui.TextInput(
+        label="Klasse & Rasse",
+        placeholder="z.B. Paladin (Mensch) oder Krieger",
+        max_length=50,
+        required=True
+    )
+    specs = discord.ui.TextInput(
+        label="Main-Spec & Dual-Spec",
+        placeholder="z.B. Vergeltung | Heilig",
+        max_length=80,
+        required=True
+    )
+    extra_info = discord.ui.TextInput(
+        label="Bild-Link, Armory oder Bio (optional)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Bild-URL oder Armory-Link / Bio",
+        max_length=500,
+        required=False
+    )
+
+    def __init__(self, uploaded_file: discord.Attachment = None):
+        super().__init__()
+        self.uploaded_file = uploaded_file
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        user_id = interaction.user.id
+        guild_id = interaction.guild_id
+
+        first_name = self.first_name.value.strip()
+        last_name = self.last_name.value.strip() if self.last_name.value else ""
+        
+        # Klasse & Rasse ermitteln
+        class_input = self.char_class.value.strip()
+        matched_class = "Krieger"
+        race = ""
+        for c in WOW_CLASSES:
+            if c.lower() in class_input.lower():
+                matched_class = c
+                break
+        if "(" in class_input and ")" in class_input:
+            race = class_input[class_input.find("(")+1 : class_input.find(")")].strip()
+        elif matched_class and matched_class.lower() != class_input.lower():
+            race = class_input.replace(matched_class, "").strip(" ,-/")
+
+        # Specs parsen
+        specs_input = self.specs.value.strip()
+        if "|" in specs_input:
+            parts = specs_input.split("|", 1)
+            main_spec = parts[0].strip()
+            dual_spec = parts[1].strip()
+        elif "/" in specs_input:
+            parts = specs_input.split("/", 1)
+            main_spec = parts[0].strip()
+            dual_spec = parts[1].strip()
+        else:
+            main_spec = specs_input
+            dual_spec = ""
+
+        # Vorheriges Profil prüfen
+        existing = await database.get_character(user_id, guild_id)
+        image_url = existing["image_url"] if existing else None
+        old_msg_id = existing["gallery_message_id"] if existing else None
+
+        # Bild & Extra Info
+        armory_url = None
+        bio_lines = []
+        if self.extra_info.value:
+            lines = [l.strip() for l in self.extra_info.value.split("\n") if l.strip()]
+            for line in lines:
+                if line.startswith("http://") or line.startswith("https://"):
+                    if any(ext in line.lower() for ext in [".png", ".jpg", ".jpeg", ".webp", ".gif", "imgur", "discordapp"]):
+                        image_url = line
+                        continue
+                    if not armory_url:
+                        armory_url = line
+                        continue
+                bio_lines.append(line)
+
+        bio = " ".join(bio_lines) if bio_lines else (existing["bio"] if existing else None)
+
+        # Wurde direkt eine Datei angehängt?
+        image_bytes = None
+        filename = None
+        if self.uploaded_file:
+            content_type = self.uploaded_file.content_type or ""
+            if content_type.startswith("image/"):
+                image_bytes = await self.uploaded_file.read()
+                filename = self.uploaded_file.filename
+
+        char_data = {
+            "first_name": first_name,
+            "last_name": last_name,
+            "char_class": matched_class,
+            "main_spec": main_spec,
+            "dual_spec": dual_spec,
+            "race": race,
+            "image_url": image_url,
+            "armory_url": armory_url,
+            "bio": bio
+        }
+
+        # Galerie prüfen
+        gallery_channel_id = await database.get_gallery_channel(guild_id)
+        gallery_status = "Dein Charakterprofil wurde gespeichert!"
+
+        if gallery_channel_id:
+            channel = interaction.guild.get_channel(gallery_channel_id)
+            if channel:
+                # Altes Embed löschen
+                if old_msg_id:
+                    try:
+                        old_msg = await channel.fetch_message(old_msg_id)
+                        await old_msg.delete()
+                    except Exception:
+                        pass
+
+                try:
+                    if image_bytes and filename:
+                        file_ch = discord.File(io.BytesIO(image_bytes), filename=filename)
+                        embed_ch = build_character_embed(interaction.user, char_data, attachment_filename=filename)
+                        new_msg = await channel.send(embed=embed_ch, file=file_ch)
+                        if new_msg.attachments:
+                            image_url = new_msg.attachments[0].url
+                            char_data["image_url"] = image_url
+                    else:
+                        embed_ch = build_character_embed(interaction.user, char_data)
+                        new_msg = await channel.send(embed=embed_ch)
+
+                    await database.update_gallery_message_id(user_id, guild_id, new_msg.id)
+                    gallery_status += f" Dein Eintrag wurde in {channel.mention} ausgestellt!"
+                except discord.Forbidden:
+                    gallery_status += f" ⚠️ Der Bot hat keine Schreibrechte in {channel.mention}. Bitte Kanalberechtigungen prüfen!"
+                except Exception as e:
+                    gallery_status += f" ⚠️ Fehler beim Posten in die Galerie: {e}"
+            else:
+                gallery_status += " (Hinweis: Galerie-Kanal nicht gefunden. Bitte `/galerie_setup` ausführen)."
+
+        # Speichern in DB
+        await database.save_character(
+            user_id=user_id,
+            guild_id=guild_id,
+            first_name=char_data["first_name"],
+            last_name=char_data["last_name"],
+            char_class=char_data["char_class"],
+            main_spec=char_data["main_spec"],
+            dual_spec=char_data["dual_spec"],
+            race=char_data["race"],
+            image_url=image_url,
+            armory_url=char_data["armory_url"],
+            bio=char_data["bio"]
+        )
+
+        embed_preview = build_character_embed(interaction.user, char_data)
+        hint = "\n💡 *Tipp: Ein Bild kannst du jederzeit mit `/charakter_bild` als Datei hochladen!*" if not image_url else ""
+        await interaction.followup.send(content=f"✅ **{gallery_status}**{hint}", embed=embed_preview, ephemeral=True)
+
 
 @bot.event
 async def on_ready():
@@ -27,7 +195,7 @@ async def on_ready():
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
         except Exception as e:
-            print(f"Fehler bei Guild-Sync für {guild.name}: {e}")
+            print(f"Fehler bei Guild-Sync: {e}")
     try:
         await bot.tree.sync()
         print(f"Eingeloggt als {bot.user} | Commands synchronisiert.")
@@ -35,121 +203,73 @@ async def on_ready():
         print(f"Fehler bei Global-Sync: {e}")
 
 
-# Slash Command: Charakter eintragen mit direktem Datei-Upload
-@bot.tree.command(name="charakter_eintragen", description="Trage deinen WoW Main-Charakter mit Bild-Upload ein")
-@app_commands.describe(
-    vorname="Charaktername (Vorname)",
-    klasse="Deine WoW Klasse",
-    main_spec="Deine primäre Spezialisierung (z.B. Furor, Heilig, Schatten)",
-    bild="Lade einen Screenshot oder ein Bild deines Charakters hoch (PNG/JPG/WEBP)",
-    dual_spec="Deine Zweitspezialisierung (z.B. Schutz, Disziplin)",
-    nachname="Nachname deines Charakters (optional)",
-    rasse="Rasse deines Charakters (z.B. Nachtelf, Untoter, Zwerg)",
-    armory="Link zu Armory/Arsenal (optional)",
-    bio="Kurze Beschreibung, Rolle oder Zitat (optional)"
-)
-@app_commands.choices(klasse=WOW_CLASSES_CHOICES)
-async def charakter_eintragen(
-    interaction: discord.Interaction,
-    vorname: str,
-    klasse: app_commands.Choice[str],
-    main_spec: str,
-    bild: discord.Attachment = None,
-    dual_spec: str = None,
-    nachname: str = None,
-    rasse: str = None,
-    armory: str = None,
-    bio: str = None
-):
+# Slash Command 1: Charakter eintragen (öffnet das Popup-Fenster!)
+@bot.tree.command(name="charakter_eintragen", description="Öffnet das Popup-Fenster, um deinen WoW Main einzutragen")
+@app_commands.describe(bild="Optional: Hänge direkt ein Bild/Screenshot an")
+async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment = None):
+    modal = CharacterModal(uploaded_file=bild)
+    await interaction.response.send_modal(modal)
+
+
+# Slash Command 2: Eigenes Bild per Datei-Upload aktualisieren
+@bot.tree.command(name="charakter_bild", description="Lade ein neues Bild/Screenshot für deinen Charakter hoch")
+@app_commands.describe(bild="Dein Screenshot / Bild (PNG, JPG, WEBP)")
+async def charakter_bild(interaction: discord.Interaction, bild: discord.Attachment):
     await interaction.response.defer(ephemeral=True)
 
-    user_id = interaction.user.id
-    guild_id = interaction.guild_id
+    content_type = bild.content_type or ""
+    if not content_type.startswith("image/"):
+        await interaction.followup.send("⚠️ Die Datei ist kein gültiges Bild (PNG, JPG, WEBP erforderlich).", ephemeral=True)
+        return
 
-    # Vorheriges Profil prüfen (um Bild zu behalten falls keins neu hochgeladen wurde)
-    existing = await database.get_character(user_id, guild_id)
-    image_url = existing["image_url"] if existing else None
-    old_msg_id = existing["gallery_message_id"] if existing else None
+    char = await database.get_character(interaction.user.id, interaction.guild_id)
+    if not char:
+        await interaction.followup.send("⚠️ Du hast noch keinen Charakter eingetragen. Nutze zuerst `/charakter_eintragen`.", ephemeral=True)
+        return
 
-    # Falls eine neue Datei hochgeladen wurde:
-    image_bytes = None
-    attachment_filename = None
-    if bild:
-        # Prüfen, ob es sich um ein Bild handelt
-        content_type = bild.content_type or ""
-        if not content_type.startswith("image/"):
-            await interaction.followup.send("⚠️ Die hochgeladene Datei ist kein gültiges Bild (bitte PNG, JPG oder WEBP hochladen).", ephemeral=True)
+    char_data = dict(char)
+    image_bytes = await bild.read()
+    filename = bild.filename
+    old_msg_id = char["gallery_message_id"]
+
+    gallery_channel_id = await database.get_gallery_channel(interaction.guild_id)
+    channel = interaction.guild.get_channel(gallery_channel_id) if gallery_channel_id else None
+
+    if channel:
+        if old_msg_id:
+            try:
+                old_msg = await channel.fetch_message(old_msg_id)
+                await old_msg.delete()
+            except Exception:
+                pass
+
+        try:
+            file_ch = discord.File(io.BytesIO(image_bytes), filename=filename)
+            embed_ch = build_character_embed(interaction.user, char_data, attachment_filename=filename)
+            new_msg = await channel.send(embed=embed_ch, file=file_ch)
+            if new_msg.attachments:
+                image_url = new_msg.attachments[0].url
+                char_data["image_url"] = image_url
+                await database.update_gallery_message_id(interaction.user.id, interaction.guild_id, new_msg.id)
+                await database.save_character(
+                    user_id=interaction.user.id,
+                    guild_id=interaction.guild_id,
+                    first_name=char_data["first_name"],
+                    last_name=char_data["last_name"],
+                    char_class=char_data["char_class"],
+                    main_spec=char_data["main_spec"],
+                    dual_spec=char_data["dual_spec"],
+                    race=char_data["race"],
+                    image_url=image_url,
+                    armory_url=char_data["armory_url"],
+                    bio=char_data["bio"]
+                )
+        except discord.Forbidden:
+            await interaction.followup.send("⚠️ Der Bot hat keine Berechtigung, in den Galerie-Kanal zu schreiben.", ephemeral=True)
             return
-        image_bytes = await bild.read()
-        attachment_filename = bild.filename
 
-    char_data = {
-        "first_name": vorname.strip(),
-        "last_name": nachname.strip() if nachname else "",
-        "char_class": klasse.value,
-        "main_spec": main_spec.strip(),
-        "dual_spec": dual_spec.strip() if dual_spec else "",
-        "race": rasse.strip() if rasse else "",
-        "image_url": image_url,
-        "armory_url": armory.strip() if armory else None,
-        "bio": bio.strip() if bio else None
-    }
-
-    # Galerie-Kanal prüfen
-    gallery_channel_id = await database.get_gallery_channel(guild_id)
-    gallery_status = "Dein Charakterprofil wurde gespeichert!"
-
-    if gallery_channel_id:
-        channel = interaction.guild.get_channel(gallery_channel_id)
-        if channel:
-            # Alte Nachricht in der Galerie entfernen, um saubere Reihenfolge/Bilder zu gewährleisten
-            if old_msg_id:
-                try:
-                    old_msg = await channel.fetch_message(old_msg_id)
-                    await old_msg.delete()
-                except Exception:
-                    pass
-
-            # Neue Nachricht im Galerie-Kanal posten
-            if image_bytes and attachment_filename:
-                file_for_channel = discord.File(io.BytesIO(image_bytes), filename=attachment_filename)
-                embed_channel = build_character_embed(interaction.user, char_data, attachment_filename=attachment_filename)
-                new_msg = await channel.send(embed=embed_channel, file=file_for_channel)
-                if new_msg.attachments:
-                    image_url = new_msg.attachments[0].url
-                    char_data["image_url"] = image_url
-            else:
-                embed_channel = build_character_embed(interaction.user, char_data)
-                new_msg = await channel.send(embed=embed_channel)
-
-            await database.update_gallery_message_id(user_id, guild_id, new_msg.id)
-            gallery_status += f" Dein Eintrag wurde in {channel.mention} ausgestellt!"
-        else:
-            gallery_status += " (Hinweis: Der Galerie-Kanal existiert nicht mehr. Bitte `/galerie_setup` erneut ausführen)."
-
-    # Datenbank aktualisieren
-    await database.save_character(
-        user_id=user_id,
-        guild_id=guild_id,
-        first_name=char_data["first_name"],
-        last_name=char_data["last_name"],
-        char_class=char_data["char_class"],
-        main_spec=char_data["main_spec"],
-        dual_spec=char_data["dual_spec"],
-        race=char_data["race"],
-        image_url=image_url,
-        armory_url=char_data["armory_url"],
-        bio=char_data["bio"]
-    )
-
-    # Vorschau für den Nutzer
-    if image_bytes and attachment_filename:
-        file_preview = discord.File(io.BytesIO(image_bytes), filename=attachment_filename)
-        embed_preview = build_character_embed(interaction.user, char_data, attachment_filename=attachment_filename)
-        await interaction.followup.send(content=f"✅ **{gallery_status}**", embed=embed_preview, file=file_preview, ephemeral=True)
-    else:
-        embed_preview = build_character_embed(interaction.user, char_data)
-        await interaction.followup.send(content=f"✅ **{gallery_status}**", embed=embed_preview, ephemeral=True)
+    embed_preview = build_character_embed(interaction.user, char_data)
+    await interaction.followup.send("✅ **Dein Charakterbild wurde erfolgreich aktualisiert!**", embed=embed_preview, ephemeral=True)
 
 
 # Slash Command: Profil ansehen
@@ -196,44 +316,6 @@ async def charakter_loeschen(interaction: discord.Interaction):
 async def galerie_setup(interaction: discord.Interaction, channel: discord.TextChannel):
     await database.set_gallery_channel(interaction.guild_id, channel.id)
     await interaction.response.send_message(f"✅ Main-Galerie Kanal wurde auf {channel.mention} gesetzt! Ab jetzt werden Charaktere dort automatisch gepostet und gepflegt.", ephemeral=True)
-
-
-# Admin Command: Galerie neu synchronisieren
-@bot.tree.command(name="galerie_sync", description="Admin: Baut die Galerie im konfigurierten Kanal komplett neu auf")
-@app_commands.default_permissions(administrator=True)
-async def galerie_sync(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    channel_id = await database.get_gallery_channel(interaction.guild_id)
-    if not channel_id:
-        await interaction.followup.send("⚠️ Es ist noch kein Galerie-Kanal definiert. Nutze zuerst `/galerie_setup`.")
-        return
-
-    channel = interaction.guild.get_channel(channel_id)
-    if not channel:
-        await interaction.followup.send("⚠️ Der konfigurierte Galerie-Kanal wurde nicht gefunden.")
-        return
-
-    chars = await database.list_guild_characters(interaction.guild_id)
-    if not chars:
-        await interaction.followup.send("Es sind bisher noch keine Charaktere eingetragen.")
-        return
-
-    count = 0
-    for char in chars:
-        user = interaction.guild.get_member(char["user_id"])
-        if not user:
-            try:
-                user = await bot.fetch_user(char["user_id"])
-            except Exception:
-                user = None
-
-        if user:
-            embed = build_character_embed(user, dict(char))
-            new_msg = await channel.send(embed=embed)
-            await database.update_gallery_message_id(char["user_id"], interaction.guild_id, new_msg.id)
-            count += 1
-
-    await interaction.followup.send(f"✅ Galerie synchronisiert: {count} Charaktere in {channel.mention} gepostet.")
 
 
 if __name__ == "__main__":
