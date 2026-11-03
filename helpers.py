@@ -76,7 +76,7 @@ def build_character_embed(user: discord.User | discord.Member, char_data, attach
     desc_lines = []
     if bio:
         desc_lines.append(f"> *„{bio}“*\n")
-    desc_lines.append("───────────────────────────────")
+    desc_lines.append("───────────────────────")
     embed.description = "\n".join(desc_lines)
 
     if user:
@@ -94,14 +94,14 @@ def build_character_embed(user: discord.User | discord.Member, char_data, attach
 
     embed.add_field(
         name="🗡️  Main-Skillung",
-        value=f"**{main_spec}**\n`{main_role_str}`",
+        value=f"**{main_spec}**\n{main_role_str}",
         inline=True
     )
 
     if dual_spec:
         embed.add_field(
             name="🔄  Dual-Skillung",
-            value=f"**{dual_spec}**\n`{dual_role_str}`",
+            value=f"**{dual_spec}**\n{dual_role_str}",
             inline=True
         )
     else:
