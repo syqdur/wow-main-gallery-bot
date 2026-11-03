@@ -17,19 +17,18 @@ CLASS_COLORS = {
     "Rufer": 0x33937F
 }
 
-# WoW Klassenliste
 WOW_CLASSES = list(CLASS_COLORS.keys())
 
 def get_class_color(char_class: str) -> int:
     return CLASS_COLORS.get(char_class, 0x5865F2)
 
-def build_character_embed(user: discord.User | discord.Member, char_data) -> discord.Embed:
-    first_name = char_data["first_name"]
-    last_name = char_data["last_name"]
+def build_character_embed(user: discord.User | discord.Member, char_data, attachment_filename: str = None) -> discord.Embed:
+    first_name = char_data.get("first_name", "")
+    last_name = char_data.get("last_name") or ""
     full_name = f"{first_name} {last_name}".strip() if last_name else first_name
-    char_class = char_data["char_class"]
-    main_spec = char_data["main_spec"]
-    dual_spec = char_data["dual_spec"]
+    char_class = char_data.get("char_class", "Krieger")
+    main_spec = char_data.get("main_spec", "-")
+    dual_spec = char_data.get("dual_spec")
     race = char_data.get("race")
     image_url = char_data.get("image_url")
     armory_url = char_data.get("armory_url")
@@ -42,7 +41,8 @@ def build_character_embed(user: discord.User | discord.Member, char_data) -> dis
         color=color
     )
 
-    embed.set_author(name=f"Spieler: {user.display_name}", icon_url=user.display_avatar.url if user.display_avatar else None)
+    if user:
+        embed.set_author(name=f"Spieler: {user.display_name}", icon_url=user.display_avatar.url if user.display_avatar else None)
     
     # Details Fields
     class_race = f"{race} {char_class}".strip() if race else char_class
@@ -55,9 +55,11 @@ def build_character_embed(user: discord.User | discord.Member, char_data) -> dis
         embed.add_field(name="🔄 Dual Spec", value="*Keiner*", inline=True)
 
     if armory_url:
-        embed.add_field(name="🔗 Armory / Link", value=f"[Arsenal Profil]({armory_url})", inline=False)
+        embed.add_field(name="🔗 Armory / Profil", value=f"[Arsenal Profil]({armory_url})", inline=False)
 
-    if image_url:
+    if attachment_filename:
+        embed.set_image(url=f"attachment://{attachment_filename}")
+    elif image_url:
         embed.set_image(url=image_url)
 
     embed.set_footer(text="WoW Forever • Main Galerie")
