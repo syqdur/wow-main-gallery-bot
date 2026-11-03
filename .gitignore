@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Config & Secrets (WICHTIG: Niemals den Bot-Token hochladen!)
+.env
+
+# Database & Logs
+gallery.db
+*.sqlite3
+*.log
