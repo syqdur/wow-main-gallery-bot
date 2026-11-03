@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 import database
 import armory
+import emojis
 from helpers import build_character_embed, WOW_CLASSES
 
 load_dotenv()
@@ -142,13 +143,13 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
                 try:
                     if image_bytes and filename:
                         file_ch = discord.File(io.BytesIO(image_bytes), filename=filename)
-                        embed_ch = build_character_embed(interaction.user, char_data, attachment_filename=filename)
+                        embed_ch = build_character_embed(interaction.user, char_data, attachment_filename=filename, guild=interaction.guild)
                         new_msg = await channel.send(embed=embed_ch, file=file_ch)
                         if new_msg.attachments:
                             image_url = new_msg.attachments[0].url
                             char_data["image_url"] = image_url
                     else:
-                        embed_ch = build_character_embed(interaction.user, char_data)
+                        embed_ch = build_character_embed(interaction.user, char_data, guild=interaction.guild)
                         new_msg = await channel.send(embed=embed_ch)
 
                     await database.update_gallery_message_id(user_id, guild_id, new_msg.id)
@@ -175,14 +176,13 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
             bio=char_data["bio"]
         )
 
-        embed_preview = build_character_embed(interaction.user, char_data)
+        embed_preview = build_character_embed(interaction.user, char_data, guild=interaction.guild)
         await interaction.followup.send(content=f"✅ **{gallery_status}**", embed=embed_preview, ephemeral=True)
 
 
 @bot.event
 async def on_ready():
     await database.init_db()
-    # Bereinige Guild-Duplikate, damit Befehle nur genau 1x im Discord existieren
     for guild in bot.guilds:
         try:
             bot.tree.clear_commands(guild=guild)
@@ -191,7 +191,7 @@ async def on_ready():
             pass
     try:
         synced = await bot.tree.sync()
-        print(f"Eingeloggt als {bot.user} | {len(synced)} globale Commands synchronisiert (keine Duplikate).")
+        print(f"Eingeloggt als {bot.user} | {len(synced)} globale Commands synchronisiert.")
     except Exception as e:
         print(f"Fehler bei Command-Sync: {e}")
 
@@ -229,7 +229,7 @@ async def charakter_import(interaction: discord.Interaction, link: str):
                     pass
 
             try:
-                embed_ch = build_character_embed(interaction.user, data)
+                embed_ch = build_character_embed(interaction.user, data, guild=interaction.guild)
                 new_msg = await channel.send(embed=embed_ch)
                 await database.update_gallery_message_id(user_id, guild_id, new_msg.id)
                 gallery_status += f" Und in {channel.mention} ausgestellt!"
@@ -253,7 +253,7 @@ async def charakter_import(interaction: discord.Interaction, link: str):
         bio=data["bio"]
     )
 
-    embed_preview = build_character_embed(interaction.user, data)
+    embed_preview = build_character_embed(interaction.user, data, guild=interaction.guild)
     await interaction.followup.send(
         content=f"🎉 **{gallery_status}**\n*Name: {data['first_name']} {data['last_name']} | Klasse: {data['char_class']} | Bild: Automatisch übernommen*",
         embed=embed_preview,
@@ -281,7 +281,7 @@ async def profil(interaction: discord.Interaction, user: discord.Member = None):
         await interaction.response.send_message(msg, ephemeral=True)
         return
 
-    embed = build_character_embed(target_user, dict(char))
+    embed = build_character_embed(target_user, dict(char), guild=interaction.guild)
     await interaction.response.send_message(embed=embed)
 
 
@@ -313,6 +313,16 @@ async def charakter_loeschen(interaction: discord.Interaction):
 async def galerie_setup(interaction: discord.Interaction, channel: discord.TextChannel):
     await database.set_gallery_channel(interaction.guild_id, channel.id)
     await interaction.response.send_message(f"✅ Main-Galerie Kanal wurde auf {channel.mention} gesetzt! Ab jetzt werden Charaktere dort automatisch gepostet und gepflegt.", ephemeral=True)
+
+
+# Befehl 6: Echte WoW-Icons auf den Server installieren (Admin)
+@bot.tree.command(name="wow_icons_installieren", description="Admin: Lädt alle originalen WoW-Klassen- und Rollen-Icons auf diesen Server")
+@app_commands.default_permissions(administrator=True)
+async def wow_icons_installieren(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    status = await emojis.install_wow_emojis(interaction.guild)
+    count = status.get("created", 0)
+    await interaction.followup.send(f"⚔️ **Fertig!** Es wurden **{count} originale WoW-Icons** (Klassen & Rollen) auf deinen Discord-Server hochgeladen und stehen ab sofort in allen Embeds zur Verfügung!", ephemeral=True)
 
 
 if __name__ == "__main__":
