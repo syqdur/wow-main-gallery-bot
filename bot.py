@@ -6,12 +6,12 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 import database
+import armory
 from helpers import build_character_embed, WOW_CLASSES
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Reine Standard-Intents (keine Privileged Intents nötig, läuft 100% stabil)
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -42,7 +42,7 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
         required=True
     )
     extra_info = discord.ui.TextInput(
-        label="Bio / Armory (optional)",
+        label="Bio / Armory-Link (optional)",
         style=discord.TextStyle.paragraph,
         placeholder="Kurze Beschreibung oder Arsenal-Link",
         max_length=300,
@@ -132,7 +132,6 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
         if gallery_channel_id:
             channel = interaction.guild.get_channel(gallery_channel_id)
             if channel:
-                # Altes Embed löschen
                 if old_msg_id:
                     try:
                         old_msg = await channel.fetch_message(old_msg_id)
@@ -183,29 +182,94 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
 @bot.event
 async def on_ready():
     await database.init_db()
+    # Bereinige Guild-Duplikate, damit Befehle nur genau 1x im Discord existieren
     for guild in bot.guilds:
         try:
-            bot.tree.copy_global_to(guild=guild)
+            bot.tree.clear_commands(guild=guild)
             await bot.tree.sync(guild=guild)
-        except Exception as e:
-            print(f"Fehler bei Guild-Sync: {e}")
+        except Exception:
+            pass
     try:
-        await bot.tree.sync()
-        print(f"Eingeloggt als {bot.user} | Commands synchronisiert.")
+        synced = await bot.tree.sync()
+        print(f"Eingeloggt als {bot.user} | {len(synced)} globale Commands synchronisiert (keine Duplikate).")
     except Exception as e:
-        print(f"Fehler bei Global-Sync: {e}")
+        print(f"Fehler bei Command-Sync: {e}")
 
 
-# Befehl: In einem Rutsch Charakter eintragen
-@bot.tree.command(name="charakter_eintragen", description="Trage deinen WoW Main ein: Bild anhängen & Popup ausfüllen")
-@app_commands.describe(bild="Pflichtfeld: Klicke hier oder ziehe deinen Screenshot direkt rein")
-async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment):
-    # Öffnet sofort das Popup-Fenster und nimmt die angehängte Datei mit!
+# Befehl 1: AUTOMATISCHER IMPORT AUS DEM ARMORY / ARSENAL
+@bot.tree.command(name="charakter_import", description="Importiert deinen Charakter automatisch aus dem Armory / Arsenal")
+@app_commands.describe(link="Der Link zu deinem Profil (z.B. von armorywowforever.com, aotc.gg oder Blizzard)")
+async def charakter_import(interaction: discord.Interaction, link: str):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        data = await armory.fetch_armory_data(link)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Konnte Daten aus dem Armory nicht abrufen: {e}", ephemeral=True)
+        return
+
+    user_id = interaction.user.id
+    guild_id = interaction.guild_id
+
+    existing = await database.get_character(user_id, guild_id)
+    old_msg_id = existing["gallery_message_id"] if existing else None
+
+    # In Galerie posten
+    gallery_channel_id = await database.get_gallery_channel(guild_id)
+    gallery_status = "Dein Charakter wurde erfolgreich aus dem Armory importiert!"
+
+    if gallery_channel_id:
+        channel = interaction.guild.get_channel(gallery_channel_id)
+        if channel:
+            if old_msg_id:
+                try:
+                    old_msg = await channel.fetch_message(old_msg_id)
+                    await old_msg.delete()
+                except Exception:
+                    pass
+
+            try:
+                embed_ch = build_character_embed(interaction.user, data)
+                new_msg = await channel.send(embed=embed_ch)
+                await database.update_gallery_message_id(user_id, guild_id, new_msg.id)
+                gallery_status += f" Und in {channel.mention} ausgestellt!"
+            except discord.Forbidden:
+                gallery_status += f" ⚠️ Der Bot hat keine Schreibrechte in {channel.mention}!"
+            except Exception as e:
+                gallery_status += f" ⚠️ Fehler beim Posten: {e}"
+
+    # In DB speichern
+    await database.save_character(
+        user_id=user_id,
+        guild_id=guild_id,
+        first_name=data["first_name"],
+        last_name=data["last_name"],
+        char_class=data["char_class"],
+        main_spec=data["main_spec"],
+        dual_spec=data["dual_spec"],
+        race=data["race"],
+        image_url=data["image_url"],
+        armory_url=data["armory_url"],
+        bio=data["bio"]
+    )
+
+    embed_preview = build_character_embed(interaction.user, data)
+    await interaction.followup.send(
+        content=f"🎉 **{gallery_status}**\n*Name: {data['first_name']} {data['last_name']} | Klasse: {data['char_class']} | Bild: Automatisch übernommen*",
+        embed=embed_preview,
+        ephemeral=True
+    )
+
+
+# Befehl 2: Manuelles Eintragen (Bild-Upload + Popup-Formular)
+@bot.tree.command(name="charakter_eintragen", description="Trage deinen WoW Main manuell ein: Bild anhängen & Popup ausfüllen")
+@app_commands.describe(bild="Ziehe deinen Screenshot hier rein oder wähle die Bilddatei aus")
+async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment = None):
     modal = CharacterModal(uploaded_file=bild)
     await interaction.response.send_modal(modal)
 
 
-# Befehl: Profil ansehen
+# Befehl 3: Profil ansehen
 @bot.tree.command(name="profil", description="Zeige das Profil eines Spielers an")
 @app_commands.describe(user="Der Spieler, dessen Charakter du sehen möchtest (Standard: du selbst)")
 async def profil(interaction: discord.Interaction, user: discord.Member = None):
@@ -221,7 +285,7 @@ async def profil(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.send_message(embed=embed)
 
 
-# Befehl: Charakter löschen
+# Befehl 4: Charakter löschen
 @bot.tree.command(name="charakter_loeschen", description="Löscht deinen eingetragenen Main-Charakter")
 async def charakter_loeschen(interaction: discord.Interaction):
     guild_id = interaction.guild_id
@@ -242,7 +306,7 @@ async def charakter_loeschen(interaction: discord.Interaction):
     await interaction.response.send_message("🗑️ Dein Charakterprofil und Galerie-Eintrag wurden gelöscht.", ephemeral=True)
 
 
-# Befehl: Galerie-Setup (Admin)
+# Befehl 5: Galerie-Setup (Admin)
 @bot.tree.command(name="galerie_setup", description="Admin: Legt den Kanal für die Main-Galerie fest")
 @app_commands.describe(channel="Der Kanal, in dem die Main-Charaktere ausgestellt werden")
 @app_commands.default_permissions(administrator=True)
