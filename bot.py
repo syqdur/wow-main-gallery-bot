@@ -1,5 +1,6 @@
 import os
 import io
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,9 +15,133 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Modal (Popup-Fenster)
+# =========================================================================
+# STREAM-TALK PIN SYSTEM (Syq LIVE & DerOnkel LIVE)
+# =========================================================================
+# Syq LIVE: PIN 2407
+# DerOnkel LIVE: PIN 9536
+STREAM_PINS = {
+    "2407": {
+        "title": "Syq LIVE",
+        "keywords": ["syq live", "syq"]
+    },
+    "9536": {
+        "title": "DerOnkel LIVE",
+        "keywords": ["deronkel live", "deronkel", "onkel live", "onkel"]
+    }
+}
+
+class StreamPinModal(discord.ui.Modal, title="Stream-Talk PIN-Eingabe"):
+    pin_input = discord.ui.TextInput(
+        label="4-stelliger PIN",
+        placeholder="z.B. 2407 oder 9536",
+        min_length=4,
+        max_length=8,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pin = self.pin_input.value.strip()
+        config = STREAM_PINS.get(pin)
+
+        if not config:
+            await interaction.response.send_message(
+                "❌ **Falscher PIN!** Zugriff verweigert.",
+                ephemeral=True
+            )
+            return
+
+        # Den passenden Sprachkanal auf dem Server ermitteln
+        target_channel = None
+        for vc in interaction.guild.voice_channels:
+            name_clean = vc.name.lower()
+            if any(k in name_clean for k in config["keywords"]):
+                target_channel = vc
+                break
+
+        if not target_channel:
+            await interaction.response.send_message(
+                f"⚠️ Sprachkanal **{config['title']}** wurde auf diesem Server nicht gefunden! Bitte Kanalnamen prüfen.",
+                ephemeral=True
+            )
+            return
+
+        # Berechtigung für dieses Mitglied erteilen (Verbinden & Sprechen erlauben)
+        try:
+            await target_channel.set_permissions(interaction.user, connect=True, speak=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "⚠️ Der Bot hat keine Berechtigung (*Kanäle verwalten*), um dir Zugang zu gewähren. Bitte Server-Admin Bescheid geben!",
+                ephemeral=True
+            )
+            return
+
+        # Falls der User bereits in einem Sprachkanal sitzt (z. B. Warteraum/Lobby): direkt rüberschieben
+        moved_info = ""
+        if interaction.user.voice and interaction.user.voice.channel:
+            try:
+                await interaction.user.move_to(target_channel)
+                moved_info = f" Du wurdest direkt in **{target_channel.name}** verschoben!"
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ **PIN korrekt!** Du bist für **{target_channel.name}** freigeschaltet.{moved_info}\n"
+            f"🔒 *Sicherheitshinweis: Sobald du den Kanal verlässt, wird die Sperre für dich automatisch wieder aktiviert.*",
+            ephemeral=True
+        )
+
+        # Sicherheits-Timer: Nach 5 Minuten Berechtigung löschen, falls der User nie beigetreten ist
+        async def revoke_if_never_joined():
+            await asyncio.sleep(300)
+            if not interaction.user.voice or interaction.user.voice.channel != target_channel:
+                try:
+                    await target_channel.set_permissions(interaction.user, overwrite=None)
+                except Exception:
+                    pass
+
+        asyncio.create_task(revoke_if_never_joined())
+
+
+class StreamPinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # Dauerhafter Button ohne Timeout
+
+    @discord.ui.button(
+        label="🔒 Stream-Talk beitreten (PIN)",
+        style=discord.ButtonStyle.primary,
+        custom_id="btn_stream_pin_join",
+        emoji="🔑"
+    )
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StreamPinModal())
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """
+    Entzieht sofort die Berechtigung, sobald das Mitglied den Stream-Kanal verlässt.
+    Dadurch MUSS jedes Mitglied bei JEDEM Beitritt den PIN erneut eingeben.
+    """
+    if before.channel and before.channel != after.channel:
+        name_clean = before.channel.name.lower()
+        is_stream_channel = any(
+            any(k in name_clean for k in cfg["keywords"])
+            for cfg in STREAM_PINS.values()
+        )
+        if is_stream_channel:
+            try:
+                await before.channel.set_permissions(member, overwrite=None)
+            except Exception:
+                pass
+
+
+# =========================================================================
+# CHARAKTER-MODAL & REGISTRIERUNG
+# =========================================================================
 class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
     first_name = discord.ui.TextInput(
         label="Vorname (Charaktername)",
@@ -183,6 +308,10 @@ class CharacterModal(discord.ui.Modal, title="WoW Charakter eintragen"):
 @bot.event
 async def on_ready():
     await database.init_db()
+    
+    # Dauerhafte Views registrieren (Buttons bleiben nach Bot-Neustart klickbar)
+    bot.add_view(StreamPinView())
+
     for guild in bot.guilds:
         try:
             bot.tree.clear_commands(guild=guild)
@@ -196,7 +325,88 @@ async def on_ready():
         print(f"Fehler bei Command-Sync: {e}")
 
 
-# Befehl 1: AUTOMATISCHER IMPORT AUS DEM ARMORY / ARSENAL
+# =========================================================================
+# SLASH COMMANDS: STREAM-PIN SYSTEM
+# =========================================================================
+@bot.tree.command(name="stream_pin", description="Stream-Talk mit 4-stelligem PIN betreten")
+@app_commands.describe(pin="Gib deinen PIN ein (z.B. 2407 für Syq LIVE oder 9536 für DerOnkel LIVE)")
+async def stream_pin_cmd(interaction: discord.Interaction, pin: str):
+    config = STREAM_PINS.get(pin.strip())
+    if not config:
+        await interaction.response.send_message("❌ **Falscher PIN!** Zugriff verweigert.", ephemeral=True)
+        return
+
+    target_channel = None
+    for vc in interaction.guild.voice_channels:
+        name_clean = vc.name.lower()
+        if any(k in name_clean for k in config["keywords"]):
+            target_channel = vc
+            break
+
+    if not target_channel:
+        await interaction.response.send_message(
+            f"⚠️ Sprachkanal **{config['title']}** wurde nicht gefunden!",
+            ephemeral=True
+        )
+        return
+
+    try:
+        await target_channel.set_permissions(interaction.user, connect=True, speak=True)
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "⚠️ Der Bot hat keine Berechtigung (*Kanäle verwalten*), um den Zugang freizuschalten!",
+            ephemeral=True
+        )
+        return
+
+    moved_info = ""
+    if interaction.user.voice and interaction.user.voice.channel:
+        try:
+            await interaction.user.move_to(target_channel)
+            moved_info = f" Du wurdest direkt in **{target_channel.name}** verschoben!"
+        except Exception:
+            pass
+
+    await interaction.response.send_message(
+        f"✅ **PIN korrekt!** Du bist für **{target_channel.name}** freigeschaltet.{moved_info}\n"
+        f"🔒 *Sobald du den Kanal verlässt, wird der Kanal automatisch wieder gesperrt.*",
+        ephemeral=True
+    )
+
+    async def revoke_if_never_joined():
+        await asyncio.sleep(300)
+        if not interaction.user.voice or interaction.user.voice.channel != target_channel:
+            try:
+                await target_channel.set_permissions(interaction.user, overwrite=None)
+            except Exception:
+                pass
+
+    asyncio.create_task(revoke_if_never_joined())
+
+
+@bot.tree.command(name="stream_pin_setup", description="Admin: Postet das permanente PIN-Eingabe-Embed in einen Kanal (z.B. #streaming-infos)")
+@app_commands.describe(channel="Der Textkanal, in dem der Beitritts-Button gepostet werden soll")
+@app_commands.default_permissions(administrator=True)
+async def stream_pin_setup(interaction: discord.Interaction, channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🔴 STREAM-TALK BEITRITT & PIN-ABFRAGE",
+        description=(
+            "Die Sprachkanäle von **Syq LIVE** und **DerOnkel LIVE** sind passwortgeschützt.\n\n"
+            "👉 Klicke unten auf den Button **🔑 Stream-Talk beitreten**, um deinen 4-stelligen PIN einzugeben.\n\n"
+            "• **Syq LIVE:** Nur mit gültigem PIN\n"
+            "• **DerOnkel LIVE:** Nur mit gültigem PIN\n\n"
+            "🔒 *Jeder Beitritt erfordert erneut den PIN. Wenn du den Talk verlässt, wirst du automatisch wieder gesperrt.*"
+        ),
+        color=0xe74c3c
+    )
+    embed.set_footer(text="TEH CVLT • Stream Voice Security")
+    await channel.send(embed=embed, view=StreamPinView())
+    await interaction.response.send_message(f"✅ PIN-Beitritts-Box wurde erfolgreich in {channel.mention} gepostet!", ephemeral=True)
+
+
+# =========================================================================
+# STANDARD GALLERY COMMANDS
+# =========================================================================
 @bot.tree.command(name="charakter_import", description="Importiert deinen Charakter automatisch aus dem Armory / Arsenal")
 @app_commands.describe(link="Der Link zu deinem Profil (z.B. von armorywowforever.com, aotc.gg oder Blizzard)")
 async def charakter_import(interaction: discord.Interaction, link: str):
@@ -261,7 +471,6 @@ async def charakter_import(interaction: discord.Interaction, link: str):
     )
 
 
-# Befehl 2: Manuelles Eintragen (Bild-Upload + Popup-Formular)
 @bot.tree.command(name="charakter_eintragen", description="Trage deinen WoW Main manuell ein: Bild anhängen & Popup ausfüllen")
 @app_commands.describe(bild="Ziehe deinen Screenshot hier rein oder wähle die Bilddatei aus")
 async def charakter_eintragen(interaction: discord.Interaction, bild: discord.Attachment = None):
@@ -269,7 +478,6 @@ async def charakter_eintragen(interaction: discord.Interaction, bild: discord.At
     await interaction.response.send_modal(modal)
 
 
-# Befehl 3: Profil ansehen
 @bot.tree.command(name="profil", description="Zeige das Profil eines Spielers an")
 @app_commands.describe(user="Der Spieler, dessen Charakter du sehen möchtest (Standard: du selbst)")
 async def profil(interaction: discord.Interaction, user: discord.Member = None):
@@ -285,7 +493,6 @@ async def profil(interaction: discord.Interaction, user: discord.Member = None):
     await interaction.response.send_message(embed=embed)
 
 
-# Befehl 4: Charakter löschen
 @bot.tree.command(name="charakter_loeschen", description="Löscht deinen eingetragenen Main-Charakter")
 async def charakter_loeschen(interaction: discord.Interaction):
     guild_id = interaction.guild_id
@@ -306,7 +513,6 @@ async def charakter_loeschen(interaction: discord.Interaction):
     await interaction.response.send_message("🗑️ Dein Charakterprofil und Galerie-Eintrag wurden gelöscht.", ephemeral=True)
 
 
-# Befehl 5: Galerie-Setup (Admin)
 @bot.tree.command(name="galerie_setup", description="Admin: Legt den Kanal für die Main-Galerie fest")
 @app_commands.describe(channel="Der Kanal, in dem die Main-Charaktere ausgestellt werden")
 @app_commands.default_permissions(administrator=True)
@@ -315,7 +521,6 @@ async def galerie_setup(interaction: discord.Interaction, channel: discord.TextC
     await interaction.response.send_message(f"✅ Main-Galerie Kanal wurde auf {channel.mention} gesetzt! Ab jetzt werden Charaktere dort automatisch gepostet und gepflegt.", ephemeral=True)
 
 
-# Befehl 6: Echte WoW-Icons auf den Server installieren (Admin)
 @bot.tree.command(name="wow_icons_installieren", description="Admin: Lädt alle originalen WoW-Klassen- und Rollen-Icons auf diesen Server")
 @app_commands.default_permissions(administrator=True)
 async def wow_icons_installieren(interaction: discord.Interaction):
