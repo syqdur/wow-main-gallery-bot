@@ -29,7 +29,26 @@ In WoW-Gilden und Realm-Discords ist eine **Main-Galerie** ein gesperrter/moderi
   - `/charakter_eintragen` – Öffnet das Popup-Formular.
   - `/profil [user]` – Zeigt die Charakterkarte eines bestimmten Spielers an.
   - `/charakter_loeschen` – Entfernt das Profil und löscht die Karte aus der Galerie.
-  - `/galerie_sync` – Baut die Galerie bei Bedarf sauber neu auf (Admin).
+  - `/galerie_setup #kanal` – Legt den Kanal für die Main-Galerie fest (Admin).
+  - `/wow_icons_installieren` – Installiert originale WoW-Emojis auf dem Server (Admin).
+
+---
+
+## 🔒 Stream-Talk PIN-Sicherheitssystem
+
+Schützt die Live-Stream-Talks (`Syq LIVE` und `DerOnkel LIVE`) durch 4-stellige PINs:
+- **`Syq LIVE`**: PIN **`2407`**
+- **`DerOnkel LIVE`**: PIN **`9536`**
+
+### Wie es funktioniert:
+1. **Für Mitglieder:**
+   - Klick auf den Button **🔑 Stream-Talk beitreten (PIN)** im Kanal `#streaming-infos` oder Eingabe von `/stream_pin pin:2407`.
+   - Bei korrektem PIN wird der Kanal für das Mitglied freigeschaltet (und wenn der User bereits in einem Sprachkanal sitzt, wird er sofort hineinverschoben).
+2. **Strikte Einweg-Sperre:**
+   - Sobald das Mitglied den Sprachkanal verlässt, entzieht der Bot die Berechtigung **sofort automatisch**.
+   - Jedes Mitglied muss bei jedem neuen Beitritt erneut den PIN eingeben!
+3. **Admin-Setup:**
+   - `/stream_pin_setup channel:#streaming-infos` postet die dauerhafte interaktive Beitritts-Box mit Button in den gewünschten Kanal.
 
 ---
 
